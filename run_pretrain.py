@@ -399,12 +399,12 @@ def main(args):
                     min_lr_ratio=args.min_lr_ratio,
                 )
 
+        pending_parameters = {}
+
         def optimizer_hook(p):
             if p.grad is None: 
                 return
-            optimizer_dict[p].step()
-            optimizer_dict[p].zero_grad()
-            scheduler_dict[p].step()
+            pending_parameters[p] = None
 
         # Register the hook onto every parameter
         for p in model.parameters():
@@ -437,19 +437,22 @@ def main(args):
                     min_lr_ratio=args.min_lr_ratio,
                 )
 
+        pending_parameters = {}
+
         def optimizer_hook(p):
             if (not hasattr(p, 'float_grad')) and p.grad is None: 
                 return
-            optimizer_dict[p].step()
-            optimizer_dict[p].zero_grad()
-            scheduler_dict[p].step()
+            pending_parameters[p] = None
 
         # Register the hook onto every parameter
         for p in model.parameters():
             if id(p) in id_galore_params or p.requires_grad:
                 # suboptimal: backward_hook can not be applied to int8 tensors
                 # we manully fuse the backward_hook inside the backward process
-                setattr(p, 'backward_hook', optimizer_hook)
+                if p.requires_grad:
+                    p.register_post_accumulate_grad_hook(optimizer_hook)
+                else:
+                    setattr(p, 'backward_hook', optimizer_hook)
 
         layer_wise_flag = True
 
@@ -519,6 +522,13 @@ def main(args):
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
+
+        if layer_wise_flag:
+            for p in pending_parameters:
+                optimizer_dict[p].step()
+                optimizer_dict[p].zero_grad()
+                scheduler_dict[p].step()
+            pending_parameters.clear()
 
         update_step += 1
         update_time = time.time() - update_time
